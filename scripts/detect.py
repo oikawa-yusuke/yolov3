@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
 import argparse
 import time
 from pathlib import Path
 
+import rospy
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
@@ -120,7 +124,18 @@ def detect(opt):
             # Stream results
             if view_img:
                 cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
+                cv2.waitKey(1000)  # 1000 millisecond
+
+            # publish detect image
+            pub = rospy.Publisher('/detect/images', Image, queue_size=10)
+            rospy.init_node('talker', anonymous=True)
+            r = rospy.Rate(10) # 10hz
+            bridge = CvBridge()
+            detect_img = bridge.cv2_to_imgmsg(im0, 'bgr8')
+            while not rospy.is_shutdown():
+                # detect_img = im0
+                pub.publish(detect_img)
+                r.sleep()
 
             # Save results (image with detections)
             if save_img:
