@@ -20,12 +20,9 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized
 class Detector:
     def __init__(self, opt):
         self.source, self.weights, self.view_img, self.save_txt, self.imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
-        self.augment = opt.augment
         self.conf_thres, self.iou_thres, self.classes, self.agnostic_nms = opt.conf_thres, opt.iou_thres, opt.classes, opt.agnostic_nms
-        self.max_det = opt.max_det
-        self.save_crop = opt.save_crop
-        self.hide_labels, self.hide_conf = opt.hide_labels, opt.hide_conf
-        self.line_thickness = opt.line_thickness
+        self.max_det, self.augment, self.save_crop = opt.max_det, opt.augment, opt.save_crop
+        self.hide_labels, self.hide_conf, self.line_thickness = opt.hide_labels, opt.hide_conf, opt.line_thickness
         self.save_img = not opt.nosave and not self.source.endswith('.txt')  # save inference images
         self.webcam = self.source.isnumeric() or self.source.endswith('.txt') or self.source.lower().startswith(
             ('rtsp://', 'rtmp://', 'http://', 'https://'))
