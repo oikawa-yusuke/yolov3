@@ -117,21 +117,14 @@ class Detector:
                             if self.save_crop:
                                 save_one_box(xyxy, imc, file=save_dir / 'crops' / self.names[c] / f'{p.stem}.jpg', BGR=True)
 
-                # Print time (inference + NMS)
-                # print(f'{s}Done. ({t2 - t1:.3f}s)')
-
-                # Stream results
-                # if view_img:
-                #     cv2.imshow(str(p), im0)
-                #     cv2.waitKey(1)  # 1 millisecond
-
                 # publish detect image
                 pub = rospy.Publisher('/detect/images', Image, queue_size=10)
-                # rospy.init_node('talker', anonymous=True)
                 r = rospy.Rate(10) # 10hz
                 bridge = CvBridge()
                 detect_img = bridge.cv2_to_imgmsg(im0, 'bgr8')
                 pub.publish(detect_img)
+
+        print(f'Done. ({time.time() - t0:.3f}s)')
 
 @torch.no_grad()
 def detect(source_image, opt):
