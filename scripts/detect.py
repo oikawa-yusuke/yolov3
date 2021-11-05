@@ -5,6 +5,7 @@ from pathlib import Path
 
 import rospy
 from sensor_msgs.msg import Image
+from yolov3_msgs.msg import ObjectCount, BoundingBox, BoundingBoxes
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import torch
@@ -80,8 +81,13 @@ class Detector:
             if self.classify:
                 pred = apply_classifier(pred, self.modelc, img, im0s)
 
+            # ROS publish
+            obj_cnt = ObjectCount()
+            bd_boxes = []
+
             # Process detections
             for i, det in enumerate(pred):  # detections per image
+                obj_cnt.count = int(len(det)) # detected object number
                 if self.webcam:  # batch_size >= 1
                     p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(), dataset.count
                 else:
@@ -110,12 +116,28 @@ class Detector:
                         #     with open(txt_path + '.txt', 'a') as f:
                         #         f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
+                        # set BoundingBox ros message
+                        bd_box = BoundingBox()
+                        bd_box.probability = conf
+                        bd_box.xmin, bd_box.ymin, bd_box.xmax, bd_box.ymax = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                        bd_box.id = int(cls)
+                        bd_box.Class = self.names[bd_box.id]
+                        bd_boxes.append(bd_box)
+
                         if self.save_img or opt.save_crop or view_img:  # Add bbox to image
                             c = int(cls)  # integer class
-                            label = None if self.hide_labels else (names[c] if self.hide_conf else f'{self.names[c]} {conf:.2f}')
+                            label = None if self.hide_labels else (self.names[c] if self.hide_conf else f'{self.names[c]} {conf:.2f}')
                             plot_one_box(xyxy, im0, label=label, color=colors(c, True), line_thickness=self.line_thickness)
                             if self.save_crop:
                                 save_one_box(xyxy, imc, file=save_dir / 'crops' / self.names[c] / f'{p.stem}.jpg', BGR=True)
+
+                # publish bounding boxes
+                pub_bd_box = rospy.Publisher('/detect/bounding_boxes', BoundingBoxes, queue_size=10)
+                pub_bd_box.publish(BoundingBoxes(bounding_boxes=bd_boxes))
+
+                # pubhlish object count 
+                pub_obj_cnt = rospy.Publisher('/detect/object_detector', ObjectCount, queue_size=10)
+                pub_obj_cnt.publish(obj_cnt)
 
                 # publish detect image
                 pub = rospy.Publisher('/detect/images', Image, queue_size=10)
