@@ -16,9 +16,127 @@ from utils.general import check_img_size, check_requirements, check_imshow, non_
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path, save_one_box
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized
+@torch.no_grad()
+class Detector:
+    def __init__(self, opt):
+        self.source, self.weights, self.view_img, self.save_txt, self.imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
+        self.augment = opt.augment
+        self.conf_thres, self.iou_thres, self.classes, self.agnostic_nms = opt.conf_thres, opt.iou_thres, opt.classes, opt.agnostic_nms
+        self.max_det = opt.max_det
+        self.save_crop = opt.save_crop
+        self.hide_labels, self.hide_conf = opt.hide_labels, opt.hide_conf
+        self.line_thickness = opt.line_thickness
+        self.save_img = not opt.nosave and not self.source.endswith('.txt')  # save inference images
+        self.webcam = self.source.isnumeric() or self.source.endswith('.txt') or self.source.lower().startswith(
+            ('rtsp://', 'rtmp://', 'http://', 'https://'))
 
+        # Initialize
+        set_logging()
+        self.device = select_device(opt.device)
+        self.half = self.device.type != 'cpu'  # half precision only supported on CUDA
 
+        # Load model
+        self.model = attempt_load(self.weights, map_location=self.device)  # load FP32 model
+        self.stride = int(self.model.stride.max())  # model stride
+        self.imgsz = check_img_size(self.imgsz, s=self.stride)  # check img_size
+        self.names = self.model.module.names if hasattr(self.model, 'module') else self.model.names  # get class names
+        if self.half:
+            self.model.half()  # to FP16
 
+        # Second-stage classifier
+        self.classify = False
+        if self.classify:
+            self.modelc = load_classifier(name='resnet101', n=2)  # initialize
+            self.modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=self.device)['model']).to(self.device).eval()
+
+    def detect(self, source_image):
+        # Set Dataloader
+        vid_path, vid_writer = None, None
+        if self.webcam:
+            view_img = check_imshow()
+            cudnn.benchmark = True  # set True to speed up constant image size inference
+            dataset = LoadStreams(self.source, img_size=self.imgsz, stride=self.stride)
+        else:
+            dataset = LoadImages(self.source, source_image, img_size=self.imgsz, stride=self.stride)
+
+        # Run inference
+        if self.device.type != 'cpu':
+            self.model(torch.zeros(1, 3, self.imgsz, self.imgsz).to(self.device).type_as(next(self.model.parameters())))  # run once
+        t0 = time.time()
+        for path, img, im0s, vid_cap in dataset:
+            img = torch.from_numpy(img).to(self.device)
+            img = img.half() if self.half else img.float()  # uint8 to fp16/32
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            if img.ndimension() == 3:
+                img = img.unsqueeze(0)
+
+            # Inference
+            t1 = time_synchronized()
+            pred = self.model(img, augment=self.augment)[0]
+
+            # Apply NMS
+            pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, self.classes, self.agnostic_nms,
+                                    max_det=self.max_det)
+            t2 = time_synchronized()
+
+            # Apply Classifier
+            if self.classify:
+                pred = apply_classifier(pred, self.modelc, img, im0s)
+
+            # Process detections
+            for i, det in enumerate(pred):  # detections per image
+                if self.webcam:  # batch_size >= 1
+                    p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(), dataset.count
+                else:
+                    p, s, im0, frame = path, '', im0s.copy(), getattr(dataset, 'frame', 0)
+
+                p = Path(p)  # to Path
+                # save_path = str(save_dir / p.name)  # img.jpg
+                # txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
+                s += '%gx%g ' % img.shape[2:]  # print string
+                gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+                imc = im0.copy() if self.save_crop else im0  # for opt.save_crop
+                if len(det):
+                    # Rescale boxes from img_size to im0 size
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+
+                    # Print results
+                    for c in det[:, -1].unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        s += f"{n} {self.names[int(c)]}{'s' * (n > 1)}, "  # add to string
+
+                    # Write results
+                    for *xyxy, conf, cls in reversed(det):
+                        # if save_txt:  # Write to file
+                        #     xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                        #     line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
+                        #     with open(txt_path + '.txt', 'a') as f:
+                        #         f.write(('%g ' * len(line)).rstrip() % line + '\n')
+
+                        if self.save_img or opt.save_crop or view_img:  # Add bbox to image
+                            c = int(cls)  # integer class
+                            label = None if self.hide_labels else (names[c] if self.hide_conf else f'{self.names[c]} {conf:.2f}')
+                            plot_one_box(xyxy, im0, label=label, color=colors(c, True), line_thickness=self.line_thickness)
+                            if self.save_crop:
+                                save_one_box(xyxy, imc, file=save_dir / 'crops' / self.names[c] / f'{p.stem}.jpg', BGR=True)
+
+                # Print time (inference + NMS)
+                # print(f'{s}Done. ({t2 - t1:.3f}s)')
+
+                # Stream results
+                # if view_img:
+                #     cv2.imshow(str(p), im0)
+                #     cv2.waitKey(1)  # 1 millisecond
+
+                # publish detect image
+                pub = rospy.Publisher('/detect/images', Image, queue_size=10)
+                # rospy.init_node('talker', anonymous=True)
+                r = rospy.Rate(10) # 10hz
+                bridge = CvBridge()
+                detect_img = bridge.cv2_to_imgmsg(im0, 'bgr8')
+                pub.publish(detect_img)
+
+@torch.no_grad()
 def detect(source_image, opt):
     source, weights, view_img, save_txt, imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
@@ -163,7 +281,20 @@ def detect(source_image, opt):
 
     print(f'Done. ({time.time() - t0:.3f}s)')
 
-def callback(data):
+def callback(data, detector):
+
+    bridge = CvBridge()
+    img = bridge.imgmsg_to_cv2(data, "bgr8")
+    detector.detect(img)
+    # if opt.update:  # update all models (to fix SourceChangeWarning)
+    #     for opt.weights in ['yolov3.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt']:
+    #         detect(img, opt=opt)
+    #         strip_optimizer(opt.weights)
+    # else:
+    #     detect(img, opt=opt)
+
+
+def listener():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='best.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='data/images', help='source')  # file/folder, 0 for webcam
@@ -191,22 +322,11 @@ def callback(data):
     # print(opt, data.data)
     check_requirements(exclude=('tensorboard', 'pycocotools', 'thop'))
 
-    bridge = CvBridge()
-    img = bridge.imgmsg_to_cv2(data, "bgr8")
-
-    if opt.update:  # update all models (to fix SourceChangeWarning)
-        for opt.weights in ['yolov3.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt']:
-            detect(img, opt=opt)
-            strip_optimizer(opt.weights)
-    else:
-        detect(img, opt=opt)
-
-
-def listener():
+    detector = Detector(opt)
     rospy.init_node('pytorch_ros', anonymous=True)
 
-    rospy.Subscriber("/camera_reading", Image, callback)
-    rospy.Subscriber("/front_realsense/color/image_raw", Image, callback)
+    # rospy.Subscriber("/camera_reading", Image, callback, callback_args=detector)
+    rospy.Subscriber("/front_realsense/color/image_raw", Image, callback, callback_args=detector)
 
     # spin() simply keeps python from exiting until this node is stopped
     rospy.spin()
