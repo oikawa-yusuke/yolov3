@@ -18,8 +18,8 @@ from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized
 
 
-@torch.no_grad()
-def detect(opt):
+
+def detect(source_image, opt):
     source, weights, view_img, save_txt, imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
@@ -27,7 +27,7 @@ def detect(opt):
 
     # Directories
     save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    # (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Initialize
     set_logging()
@@ -55,7 +55,7 @@ def detect(opt):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, source_image, img_size=imgsz, stride=stride)
 
     # Run inference
     if device.type != 'cpu':
@@ -119,53 +119,53 @@ def detect(opt):
                             save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
             # Print time (inference + NMS)
-            print(f'{s}Done. ({t2 - t1:.3f}s)')
+            # print(f'{s}Done. ({t2 - t1:.3f}s)')
 
             # Stream results
             if view_img:
                 cv2.imshow(str(p), im0)
-                cv2.waitKey(1000)  # 1000 millisecond
+                cv2.waitKey(1)  # 1 millisecond
 
             # publish detect image
             pub = rospy.Publisher('/detect/images', Image, queue_size=10)
-            rospy.init_node('talker', anonymous=True)
+            # rospy.init_node('talker', anonymous=True)
             r = rospy.Rate(10) # 10hz
             bridge = CvBridge()
             detect_img = bridge.cv2_to_imgmsg(im0, 'bgr8')
-            while not rospy.is_shutdown():
-                # detect_img = im0
-                pub.publish(detect_img)
-                r.sleep()
+            pub.publish(detect_img)
+            # while not rospy.is_shutdown():
+            #     # detect_img = im0
+            #     pub.publish(detect_img)
+            #     r.sleep()
 
             # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
-                    if vid_path != save_path:  # new video
-                        vid_path = save_path
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            save_path += '.mp4'
-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    vid_writer.write(im0)
+            # if save_img:
+            #     if dataset.mode == 'image':
+            #         cv2.imwrite(save_path, im0)
+            #     else:  # 'video' or 'stream'
+            #         if vid_path != save_path:  # new video
+            #             vid_path = save_path
+            #             if isinstance(vid_writer, cv2.VideoWriter):
+            #                 vid_writer.release()  # release previous video writer
+            #             if vid_cap:  # video
+            #                 fps = vid_cap.get(cv2.CAP_PROP_FPS)
+            #                 w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            #                 h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            #             else:  # stream
+            #                 fps, w, h = 30, im0.shape[1], im0.shape[0]
+            #                 save_path += '.mp4'
+            #             vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            #         vid_writer.write(im0)
 
-    if save_txt or save_img:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        print(f"Results saved to {save_dir}{s}")
+    # if save_txt or save_img:
+    #     s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+    #     print(f"Results saved to {save_dir}{s}")
 
     print(f'Done. ({time.time() - t0:.3f}s)')
 
-
-if __name__ == '__main__':
+def callback(data):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov3.pt', help='model.pt path(s)')
+    parser.add_argument('--weights', nargs='+', type=str, default='best.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='data/images', help='source')  # file/folder, 0 for webcam
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
@@ -188,12 +188,28 @@ if __name__ == '__main__':
     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
     opt = parser.parse_args()
-    print(opt)
+    # print(opt, data.data)
     check_requirements(exclude=('tensorboard', 'pycocotools', 'thop'))
+
+    bridge = CvBridge()
+    img = bridge.imgmsg_to_cv2(data, "bgr8")
 
     if opt.update:  # update all models (to fix SourceChangeWarning)
         for opt.weights in ['yolov3.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt']:
-            detect(opt=opt)
+            detect(img, opt=opt)
             strip_optimizer(opt.weights)
     else:
-        detect(opt=opt)
+        detect(img, opt=opt)
+
+
+def listener():
+    rospy.init_node('pytorch_ros', anonymous=True)
+
+    rospy.Subscriber("/camera_reading", Image, callback)
+    rospy.Subscriber("/front_realsense/color/image_raw", Image, callback)
+
+    # spin() simply keeps python from exiting until this node is stopped
+    rospy.spin()
+
+if __name__ == '__main__':
+    listener()
